@@ -1,4 +1,3 @@
-
 import io
 import zipfile
 from collections import Counter
@@ -8,6 +7,9 @@ from zip_analyzer.rules import (
     evaluate_archive,
     evaluate_special_entries,
     evaluate_suspicious_files,
+    find_high_ratio_files,
+    find_overlapping_entries,
+    is_disguised_executable,
 )
 
 ARCHIVE_EXTENSIONS = (".zip", ".rar", ".7z", ".tar", ".gz")
@@ -173,6 +175,9 @@ def analyze_zip(file_path):
         "symlink_files": [],
         "suspicious_files": [],
         "double_extension_files": [],
+        "high_ratio_files": [],
+        "overlapping_entries": [],
+        "disguised_files": [],
         "warnings": [],
         "error": None,
     }
@@ -295,6 +300,22 @@ def analyze_zip(file_path):
                         "error": str(error),
                     })
 
+            high_ratio_files = find_high_ratio_files(files)
+            overlapping_entries = find_overlapping_entries(files)
+
+            disguised_files = []
+            for entry in files:
+                if entry.flag_bits & 0x1:
+                    continue
+                try:
+                    with archive.open(entry, "r") as handle:
+                        header = handle.read(4)
+                except (OSError, RuntimeError, ValueError,
+                        EOFError, zipfile.BadZipFile):
+                    continue
+                if is_disguised_executable(entry.filename, header):
+                    disguised_files.append(entry.filename)
+
             file_types = Counter(
                 Path(entry.filename).suffix.lower() or "[uzantısız]"
                 for entry in files
@@ -319,6 +340,19 @@ def analyze_zip(file_path):
             warnings.extend(special_risk["warnings"])
             warnings.extend(suspicious_risk["warnings"])
 
+            if high_ratio_files:
+                warnings.append(
+                    f"{len(high_ratio_files)} dosyada sıkıştırma oranı çok yüksek."
+                )
+            if overlapping_entries:
+                warnings.append(
+                    "Çakışan dosya girişleri bulundu (overlap bomb olabilir)."
+                )
+            if disguised_files:
+                warnings.append(
+                    f"{len(disguised_files)} dosya uzantısını gizleyen çalıştırılabilir içeriyor."
+                )
+
             if suspicious_paths:
                 warnings.append(
                     "Şüpheli dosya yolu bulundu: "
@@ -342,6 +376,9 @@ def analyze_zip(file_path):
             ]
 
             if suspicious_paths:
+                risk_levels.append("HIGH")
+
+            if high_ratio_files or overlapping_entries or disguised_files:
                 risk_levels.append("HIGH")
 
             if any(
@@ -379,6 +416,9 @@ def analyze_zip(file_path):
                 "double_extension_files": suspicious_risk[
                     "double_extension_files"
                 ],
+                "high_ratio_files": high_ratio_files,
+                "overlapping_entries": overlapping_entries,
+                "disguised_files": disguised_files,
                 "warnings": warnings,
             })
 
